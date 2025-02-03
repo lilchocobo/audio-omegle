@@ -14,28 +14,30 @@ const socket: Socket = io(
 );
 
 const ChatComponent: React.FC = () => {
-  // Instead of video elements, we use canvas elements for waveforms.
+  // References to canvas elements for waveform visualization.
   const localCanvasRef = useRef<HTMLCanvasElement>(null);
   const remoteCanvasRef = useRef<HTMLCanvasElement>(null);
+
   const [roomId, setRoomId] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('Idle');
   const [error, setError] = useState<string | null>(null);
   const [autoSearch, setAutoSearch] = useState<boolean>(true);
+  const [socketConnected, setSocketConnected] = useState<boolean>(false);
+
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
 
-  // References for local and remote AudioContexts and AnalyserNodes.
+  // Audio context and analyser references for local and remote.
   const localAudioContextRef = useRef<AudioContext | null>(null);
   const remoteAudioContextRef = useRef<AudioContext | null>(null);
   const localAnalyserRef = useRef<AnalyserNode | null>(null);
   const remoteAnalyserRef = useRef<AnalyserNode | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
 
-  // RTC configuration remains the same.
   const rtcConfig: RTCConfiguration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   };
 
-  // Function to continuously draw waveform data from an AnalyserNode onto a canvas.
+  // Draw waveform onto a given canvas using data from an AnalyserNode.
   const drawWaveform = (analyser: AnalyserNode, canvas: HTMLCanvasElement) => {
     const canvasCtx = canvas.getContext('2d');
     if (!canvasCtx) return;
@@ -73,7 +75,11 @@ const ChatComponent: React.FC = () => {
   };
 
   useEffect(() => {
-    // Listen for the "partnerFound" event.
+    // Track socket connection status.
+    socket.on('connect', () => setSocketConnected(true));
+    socket.on('disconnect', () => setSocketConnected(false));
+
+    // Listen for partnerFound event.
     socket.on('partnerFound', async (data: PartnerFoundData) => {
       setRoomId(data.roomId);
       setStatus('Partner found, starting call...');
@@ -106,25 +112,26 @@ const ChatComponent: React.FC = () => {
       }
     });
 
-    // When the remote peer hangs up.
+    // Handle hangup from remote.
     socket.on('hangup', () => {
       setStatus('Partner hung up');
       cleanupCall();
     });
 
-    // Also listen for socket disconnection.
+    // Also handle socket disconnect.
     socket.on('disconnect', () => {
       setStatus('Disconnected from server');
       cleanupCall();
     });
 
     return () => {
+      socket.off('connect');
+      socket.off('disconnect');
       socket.off('partnerFound');
       socket.off('offer');
       socket.off('answer');
       socket.off('ice-candidate');
       socket.off('hangup');
-      socket.off('disconnect');
     };
   }, [roomId]);
 
@@ -135,7 +142,6 @@ const ChatComponent: React.FC = () => {
       peerConnectionRef.current = new RTCPeerConnection(rtcConfig);
       setStatus('Initializing call...');
 
-      // Monitor connection state changes.
       peerConnectionRef.current.onconnectionstatechange = () => {
         const state = peerConnectionRef.current?.connectionState;
         console.log('Connection state changed:', state);
@@ -144,11 +150,11 @@ const ChatComponent: React.FC = () => {
         }
       };
 
-      // Request only an audio stream.
+      // Request audio-only stream.
       const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
       localStreamRef.current = stream;
 
-      // Set up the local audio analyzer.
+      // Set up local audio analyser.
       localAudioContextRef.current = new AudioContext();
       const localSource = localAudioContextRef.current.createMediaStreamSource(stream);
       localAnalyserRef.current = localAudioContextRef.current.createAnalyser();
@@ -158,26 +164,27 @@ const ChatComponent: React.FC = () => {
         drawWaveform(localAnalyserRef.current, localCanvasRef.current);
       }
 
-      // Add the audio tracks to the peer connection.
+      // Add all audio tracks to the peer connection.
       stream.getTracks().forEach((track) => {
         peerConnectionRef.current?.addTrack(track, stream);
       });
 
-      // When remote tracks are received.
+      // Handle remote tracks.
       peerConnectionRef.current.ontrack = (event: RTCTrackEvent) => {
         const [remoteStream] = event.streams;
-        // Set up the remote audio analyzer.
-        remoteAudioContextRef.current = new AudioContext();
-        const remoteSource = remoteAudioContextRef.current.createMediaStreamSource(remoteStream);
-        remoteAnalyserRef.current = remoteAudioContextRef.current.createAnalyser();
-        remoteAnalyserRef.current.fftSize = 2048;
-        remoteSource.connect(remoteAnalyserRef.current);
-        if (remoteCanvasRef.current && remoteAnalyserRef.current) {
-          drawWaveform(remoteAnalyserRef.current, remoteCanvasRef.current);
+        // Only set up the remote analyzer once.
+        if (!remoteAudioContextRef.current) {
+          remoteAudioContextRef.current = new AudioContext();
+          remoteAnalyserRef.current = remoteAudioContextRef.current.createAnalyser();
+          remoteAnalyserRef.current.fftSize = 2048;
+          const remoteSource = remoteAudioContextRef.current.createMediaStreamSource(remoteStream);
+          remoteSource.connect(remoteAnalyserRef.current);
+          if (remoteCanvasRef.current && remoteAnalyserRef.current) {
+            drawWaveform(remoteAnalyserRef.current, remoteCanvasRef.current);
+          }
         }
       };
 
-      // Handle ICE candidates.
       peerConnectionRef.current.onicecandidate = (event) => {
         if (event.candidate) {
           socket.emit('ice-candidate', { roomId: room, candidate: event.candidate });
@@ -197,12 +204,12 @@ const ChatComponent: React.FC = () => {
   };
 
   const cleanupCall = () => {
-    // Stop the local audio tracks.
+    // Stop local audio tracks.
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
-    // Close any open audio contexts.
+    // Close audio contexts.
     if (localAudioContextRef.current) {
       localAudioContextRef.current.close();
       localAudioContextRef.current = null;
@@ -211,7 +218,7 @@ const ChatComponent: React.FC = () => {
       remoteAudioContextRef.current.close();
       remoteAudioContextRef.current = null;
     }
-    // Close the RTCPeerConnection.
+    // Close the peer connection.
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
     setRoomId(null);
@@ -244,6 +251,9 @@ const ChatComponent: React.FC = () => {
       <p className="text-lg mb-4 text-center">
         Status: <span className="font-semibold">{status}</span>
       </p>
+      <p className="text-sm text-center mb-4">
+        Socket: {socketConnected ? 'Connected' : 'Disconnected'}
+      </p>
       {error && <p className="text-red-500 mb-4 text-center">{error}</p>}
       
       <div className="flex justify-center mb-4">
@@ -253,7 +263,7 @@ const ChatComponent: React.FC = () => {
             roomId ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'
           } text-white font-semibold py-2 px-6 rounded`}
         >
-          {roomId ? 'Next' : status === 'Searching for a partner...' ? 'Searching...' : 'Search'}
+          {roomId ? 'Next' : 'Search'}
         </button>
       </div>
       
