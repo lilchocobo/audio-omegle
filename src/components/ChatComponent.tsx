@@ -253,7 +253,7 @@ const ChatComponent: React.FC = () => {
             roomId ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'
           } text-white font-semibold py-2 px-6 rounded`}
         >
-          {roomId ? 'Next' : 'Search'}
+          {roomId ? 'Next' : status === 'Searching for a partner...' ? 'Searching...' : 'Search'}
         </button>
       </div>
       
