@@ -7,14 +7,14 @@ interface PartnerFoundData {
   isInitiator: boolean;
 }
 
-// Use the new Railway server URL as default.
+// Use your Railway URL as the default.
 const socket: Socket = io(
   process.env.NEXT_PUBLIC_BACKEND_URL ||
     'https://audio-omegle-server-production.up.railway.app/'
 );
 
 const ChatComponent: React.FC = () => {
-  // References to canvas elements for waveform visualization.
+  // Canvas refs for waveform visualization.
   const localCanvasRef = useRef<HTMLCanvasElement>(null);
   const remoteCanvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -25,8 +25,6 @@ const ChatComponent: React.FC = () => {
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-
-  // Audio context and analyser references for local and remote.
   const localAudioContextRef = useRef<AudioContext | null>(null);
   const remoteAudioContextRef = useRef<AudioContext | null>(null);
   const localAnalyserRef = useRef<AnalyserNode | null>(null);
@@ -37,7 +35,7 @@ const ChatComponent: React.FC = () => {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   };
 
-  // Draw waveform onto a given canvas using data from an AnalyserNode.
+  // Function to draw waveform from an AnalyserNode to a canvas.
   const drawWaveform = (analyser: AnalyserNode, canvas: HTMLCanvasElement) => {
     const canvasCtx = canvas.getContext('2d');
     if (!canvasCtx) return;
@@ -48,11 +46,11 @@ const ChatComponent: React.FC = () => {
 
     const draw = () => {
       analyser.getByteTimeDomainData(dataArray);
-      canvasCtx.fillStyle = '#222'; // background color
+      canvasCtx.fillStyle = '#222';
       canvasCtx.fillRect(0, 0, width, height);
 
       canvasCtx.lineWidth = 2;
-      canvasCtx.strokeStyle = '#0f0'; // waveform color
+      canvasCtx.strokeStyle = '#0f0';
       canvasCtx.beginPath();
       const sliceWidth = width / bufferLength;
       let x = 0;
@@ -70,23 +68,22 @@ const ChatComponent: React.FC = () => {
       canvasCtx.stroke();
       requestAnimationFrame(draw);
     };
-
     draw();
   };
 
   useEffect(() => {
-    // Track socket connection status.
+    // Monitor socket connection status.
     socket.on('connect', () => setSocketConnected(true));
     socket.on('disconnect', () => setSocketConnected(false));
 
-    // Listen for partnerFound event.
+    // Listen for partner found event.
     socket.on('partnerFound', async (data: PartnerFoundData) => {
       setRoomId(data.roomId);
       setStatus('Partner found, starting call...');
       await startCall(data.roomId, data.isInitiator);
     });
 
-    socket.on('offer', async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
+    socket.on('offer', async ({ offer }: { offer: RTCSessionDescriptionInit; }) => {
       if (!peerConnectionRef.current) await startCall(roomId, false);
       if (peerConnectionRef.current) {
         await peerConnectionRef.current.setRemoteDescription(offer);
@@ -96,13 +93,13 @@ const ChatComponent: React.FC = () => {
       }
     });
 
-    socket.on('answer', async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
+    socket.on('answer', async ({ answer }: { answer: RTCSessionDescriptionInit; }) => {
       if (peerConnectionRef.current) {
         await peerConnectionRef.current.setRemoteDescription(answer);
       }
     });
 
-    socket.on('ice-candidate', async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
+    socket.on('ice-candidate', async ({ candidate }: { candidate: RTCIceCandidateInit; }) => {
       if (peerConnectionRef.current && candidate) {
         try {
           await peerConnectionRef.current.addIceCandidate(candidate);
@@ -112,13 +109,12 @@ const ChatComponent: React.FC = () => {
       }
     });
 
-    // Handle hangup from remote.
+    // Handle hangup/disconnect events.
     socket.on('hangup', () => {
       setStatus('Partner hung up');
       cleanupCall();
     });
 
-    // Also handle socket disconnect.
     socket.on('disconnect', () => {
       setStatus('Disconnected from server');
       cleanupCall();
@@ -138,7 +134,7 @@ const ChatComponent: React.FC = () => {
   const startCall = async (room: string | null, isInitiator: boolean) => {
     if (!room) return;
     try {
-      // Create the RTCPeerConnection.
+      // Create RTCPeerConnection.
       peerConnectionRef.current = new RTCPeerConnection(rtcConfig);
       setStatus('Initializing call...');
 
@@ -154,31 +150,40 @@ const ChatComponent: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
       localStreamRef.current = stream;
 
-      // Set up local audio analyser.
+      // Set up local audio context and analyser.
       localAudioContextRef.current = new AudioContext();
       const localSource = localAudioContextRef.current.createMediaStreamSource(stream);
       localAnalyserRef.current = localAudioContextRef.current.createAnalyser();
       localAnalyserRef.current.fftSize = 2048;
+      // Create a silent gain node so you do not hear your own audio.
+      const silentGain = localAudioContextRef.current.createGain();
+      silentGain.gain.value = 0;
       localSource.connect(localAnalyserRef.current);
+      localAnalyserRef.current.connect(silentGain);
+      silentGain.connect(localAudioContextRef.current.destination);
       if (localCanvasRef.current && localAnalyserRef.current) {
         drawWaveform(localAnalyserRef.current, localCanvasRef.current);
       }
 
-      // Add all audio tracks to the peer connection.
+      // Add local audio tracks to peer connection.
       stream.getTracks().forEach((track) => {
         peerConnectionRef.current?.addTrack(track, stream);
       });
 
-      // Handle remote tracks.
+      // When remote tracks are received.
       peerConnectionRef.current.ontrack = (event: RTCTrackEvent) => {
         const [remoteStream] = event.streams;
-        // Only set up the remote analyzer once.
+        // Set up remote audio context and analyser only once.
         if (!remoteAudioContextRef.current) {
           remoteAudioContextRef.current = new AudioContext();
+          // Ensure the context is running (sometimes needs a user gesture).
+          remoteAudioContextRef.current.resume();
           remoteAnalyserRef.current = remoteAudioContextRef.current.createAnalyser();
           remoteAnalyserRef.current.fftSize = 2048;
           const remoteSource = remoteAudioContextRef.current.createMediaStreamSource(remoteStream);
+          // Connect remote audio so you can hear it.
           remoteSource.connect(remoteAnalyserRef.current);
+          remoteAnalyserRef.current.connect(remoteAudioContextRef.current.destination);
           if (remoteCanvasRef.current && remoteAnalyserRef.current) {
             drawWaveform(remoteAnalyserRef.current, remoteCanvasRef.current);
           }
@@ -204,12 +209,10 @@ const ChatComponent: React.FC = () => {
   };
 
   const cleanupCall = () => {
-    // Stop local audio tracks.
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
-    // Close audio contexts.
     if (localAudioContextRef.current) {
       localAudioContextRef.current.close();
       localAudioContextRef.current = null;
@@ -218,7 +221,6 @@ const ChatComponent: React.FC = () => {
       remoteAudioContextRef.current.close();
       remoteAudioContextRef.current = null;
     }
-    // Close the peer connection.
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
     setRoomId(null);
@@ -255,7 +257,7 @@ const ChatComponent: React.FC = () => {
         Socket: {socketConnected ? 'Connected' : 'Disconnected'}
       </p>
       {error && <p className="text-red-500 mb-4 text-center">{error}</p>}
-      
+
       <div className="flex justify-center mb-4">
         <button
           onClick={handleButtonClick}
@@ -266,13 +268,13 @@ const ChatComponent: React.FC = () => {
           {roomId ? 'Next' : 'Search'}
         </button>
       </div>
-      
+
       <div className="text-center mb-4">
         <button onClick={toggleAutoSearch} className="text-sm text-gray-300 underline">
           {autoSearch ? 'Stop Auto Search' : 'Enable Auto Search'}
         </button>
       </div>
-      
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <h2 className="text-xl font-medium mb-2 text-center">Local Audio Waveform</h2>
